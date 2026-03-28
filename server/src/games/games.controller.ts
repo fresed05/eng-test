@@ -32,8 +32,9 @@ export class GamesController {
 
     const score = await this.gamesService.getOrCreateScoreByUserAndRound(req.user.sub, uuid);
 
-    const baseResponse: RoundWithScore = {
+    const baseResponse = {
       round: round,
+      currentUserScore: req.user.role === 'nikita' ? 0 : this.gamesService.scoreFromTapsCount(score.taps),
     };
 
     // Если раунд завершен, добавляем дополнительную информацию
@@ -43,11 +44,10 @@ export class GamesController {
         ...baseResponse,
         totalScore: summary.totalScore,
         bestPlayer: summary.bestPlayer,
-        currentUserScore: this.gamesService.scoreFromTapsCount(score.taps),
       };
       return responseWithResults;
     }
-    
+
     return baseResponse;
   }
 

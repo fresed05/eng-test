@@ -1,5 +1,7 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, NotFoundException, BadRequestException } from '@nestjs/common';
 import { InjectModel } from '@nestjs/sequelize';
+import { InjectConnection } from '@nestjs/sequelize';
+import { Sequelize } from 'sequelize-typescript';
 import { Round } from '../models/round.model';
 import { Score } from '../models/score.model';
 import { User } from '../models/user.model';
@@ -15,6 +17,8 @@ export class GamesService {
     private scoreModel: typeof Score,
     @InjectModel(User)
     private userModel: typeof User,
+    @InjectConnection()
+    private sequelize: Sequelize,
   ) {}
 
   async getAllRounds(): Promise<Round[]> {
@@ -73,26 +77,36 @@ export class GamesService {
   }
 
   async processTap(userId: string, roundUuid: string, role: string): Promise<{ score: number }> {
-    if (role != 'nikita') {
-      // Обновить запись в таблице score
-      await this.scoreModel.increment('taps', {
-        by: 1,
-        where: {
-          user: userId,
-          round: roundUuid,
-        },
-      });
-    }
+    return await this.sequelize.transaction(async (t) => {
+      // 1. Проверяем что раунд существует и активен
+      const round = await this.roundModel.findByPk(roundUuid, { transaction: t, lock: t.LOCK.UPDATE });
+      if (!round) throw new NotFoundException('Round not found');
 
+      const now = new Date();
+      if (now < round.start_datetime || now > round.end_datetime) {
+        throw new BadRequestException('Round is not active');
+      }
+
+      // 2. Если не Никита — инкрементируем taps
+      if (role !== 'nikita') {
+        await this.scoreModel.increment('taps', {
+          by: 1,
+          where: { user: userId, round: roundUuid },
+          transaction: t,
+        });
+      }
+
+      // 3. Получаем актуальный счёт
       const scoreRecord = await this.scoreModel.findOne({
-        where: {
-          user: userId,
-          round: roundUuid,
-        },
+        where: { user: userId, round: roundUuid },
+        transaction: t,
       });
-      const score = this.scoreFromTapsCount(scoreRecord.taps);
 
-      return { score };
+      // Для Никиты всегда возвращаем 0
+      if (role === 'nikita') return { score: 0 };
+
+      return { score: this.scoreFromTapsCount(scoreRecord.taps) };
+    });
   }
 
   async getRoundSummary(roundUuid: string): Promise<{
@@ -119,10 +133,10 @@ export class GamesService {
     // Находим лучшего игрока
     let bestPlayer: { username: string; score: number } | null = null;
     if (scores.length > 0) {
-      const bestScore = scores.reduce((max, score) => { 
+      const bestScore = scores.reduce((max, score) => {
         const scorePoints = this.scoreFromTapsCount(score.taps);
         const maxPoints = this.scoreFromTapsCount(max.taps);
-        return scorePoints > maxPoints ? score : max;  
+        return scorePoints > maxPoints ? score : max;
       });
 
       bestPlayer = {
